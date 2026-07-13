@@ -1,0 +1,715 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────
+//  Base account — shared across all three user roles
+// ─────────────────────────────────────────────────────────
+model Account {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  mobile          String
+  passwordHash    String
+  role            String   // "PATIENT" | "DOCTOR" | "ORGANIZATION"
+  name            String
+  govtIdType      String?  // MoM: optional for patients (collected at appointment); AADHAAR for doctors/orgs
+  govtIdNumber    String?
+  // MoM — Aadhaar & Driving License for doctors/hospitals (required at signup for them)
+  aadhaarNumber       String?
+  drivingLicenseNumber String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Address (shared fields)
+  addressLine     String
+  landmark        String?
+  city            String
+  state           String
+  pincode         String
+  lat             String?
+  lng             String?
+
+  // Patient-specific
+  bloodGroup      String?
+  emergencyName   String?
+  emergencyMobile String?
+
+  // Doctor / Org specific
+  membershipNumber String?
+  bedCount        Int?
+  capacityPerHour Int?
+  specialization  String?
+  serverLoginUser String?
+  serverLoginPass String?
+
+  // Optional profile image / biometric marker
+  biometricEnrolled Boolean @default(false)
+
+  // MoM points — verification flags
+  panVerified       Boolean  @default(false)
+  aadhaarVerified   Boolean  @default(false)
+  membershipVerified Boolean @default(false)
+  abdmId            String?  // Ayushman Bharat Health Account (ABHA) ID
+
+  // MoM point — gender (required for menstrual tracker; useful for all)
+  gender            String?  // MALE | FEMALE | OTHER
+  dateOfBirth       DateTime?
+
+  // Relations
+  patientRecords     MedicalRecord[]  @relation("PatientRecords")
+  doctorRecords      MedicalRecord[]  @relation("DoctorRecords")
+  orgRecords         MedicalRecord[]  @relation("OrgRecords")
+  patientAppointments Appointment[]    @relation("PatientAppointments")
+  doctorAppointments  Appointment[]    @relation("DoctorAppointments")
+  orgAppointments     Appointment[]    @relation("OrgAppointments")
+  insurance          Insurance?
+  referralsGiven     Referral[]       @relation("ReferralFrom")
+  referralsReceived  Referral[]       @relation("ReferralTo")
+  ratings            Rating[]         @relation("RatingTo")
+  ratingsGiven       Rating[]         @relation("RatingFrom")
+  upiId              String?
+  clinicPartnerships Partnership[]     @relation("OrgPartnerships")
+  partnerClinics     Partnership[]    @relation("ClinicPartnerships")
+  vitals             Vitals[]         @relation("PatientVitals")
+  refillsRequested   RefillRequest[]  @relation("PatientRefills")
+  refillsReceived    RefillRequest[]  @relation("DoctorRefills")
+  labOrdersPlaced    LabOrder[]       @relation("PatientLabOrders")
+  labOrdersFulfilled LabOrder[]       @relation("LabLabOrders")
+  labTestCatalogs    LabTestCatalog[] @relation("LabTestCatalogs")
+  notificationsRead  NotificationRead[] @relation("UserNotifRead")
+  chatSent           ChatMessage[]    @relation("ChatFrom")
+  chatReceived       ChatMessage[]    @relation("ChatTo")
+
+  // New relations — patient features
+  familyMembers      FamilyMember[]   @relation("FamilyMembers")
+  medications        MedicationSchedule[] @relation("PatientMedications")
+  medLogs            MedicationLog[]  @relation("PatientMedLogs")
+  emergencyAlerts    EmergencyAlert[] @relation("PatientEmergencyAlerts")
+  goals              HealthGoal[]     @relation("PatientGoals")
+  goalLogs           GoalLog[]        @relation("PatientGoalLogs")
+
+  // MoM points — new relations
+  patientQrCodes     PatientQrCode[]  @relation("PatientQrCodes")
+  bmiLogs            BmiLog[]         @relation("PatientBmiLogs")
+  menstrualLogs      MenstrualCycleLog[] @relation("PatientMenstrualLogs")
+  voiceMemos         VoiceMemo[]      @relation("PatientVoiceMemos")
+  capacitySlots      CapacitySlot[]   @relation("DoctorCapacitySlots")
+  abdmLinks          AbdmLink[]        @relation("PatientAbdmLinks")
+  directoryEntries   DoctorDirectoryEntry[] @relation("DoctorDirectoryEntries")
+}
+
+// ─────────────────────────────────────────────────────────
+//  Insurance — optional, linked to a patient
+// ─────────────────────────────────────────────────────────
+model Insurance {
+  id            String   @id @default(cuid())
+  patientId     String   @unique
+  patient       Account  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  providerName  String
+  policyNumber  String
+  insuranceType String   // HEALTH | LIFE | CRITICAL_ILLNESS | etc
+  amountCovered Float
+  medicalPremium Float
+  coverageDetails String
+  termsUrl      String?
+  premiumDueDate DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────
+//  Medical record — created by doctor / org for a patient
+// ─────────────────────────────────────────────────────────
+model MedicalRecord {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientRecords", fields: [patientId], references: [id])
+  doctorId      String
+  doctor        Account  @relation("DoctorRecords", fields: [doctorId], references: [id])
+  orgId         String?
+  org           Account? @relation("OrgRecords", fields: [orgId], references: [id])
+
+  visitType     String   // CONSULTATION | EMERGENCY | FOLLOW_UP | CHECKUP | PROCEDURE
+  clinicName    String
+  practitionerName String
+  specialization String
+  diagnosis     String   // encrypted
+  doctorsNotes  String   // encrypted
+  prescription  String   // encrypted JSON of meds
+  attachments   String   // JSON array of file refs
+  visitDate     DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────
+//  Appointment
+// ─────────────────────────────────────────────────────────
+model Appointment {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientAppointments", fields: [patientId], references: [id])
+  doctorId      String
+  doctor        Account  @relation("DoctorAppointments", fields: [doctorId], references: [id])
+  orgId         String?
+  org           Account? @relation("OrgAppointments", fields: [orgId], references: [id])
+
+  scheduledAt   DateTime
+  status        String   // PENDING | CONFIRMED | COMPLETED | CANCELLED
+  tokenNumber   String?
+  reason        String
+  notes         String?
+  // MoM point 3 — Aadhaar verification for appointments
+  aadhaarVerified Boolean @default(false)
+  aadhaarRef     String?  // masked Aadhaar reference used for this booking
+  // MoM point 4 — capacity-per-hour slot link
+  slotId         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  telemedicine  TelemedicineSession?
+  slot          CapacitySlot? @relation("SlotAppointments", fields: [slotId], references: [id])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Referral — doctor/org refers patient to another clinic
+// ─────────────────────────────────────────────────────────
+model Referral {
+  id            String   @id @default(cuid())
+  fromId        String
+  from          Account  @relation("ReferralFrom", fields: [fromId], references: [id])
+  toId          String
+  to            Account  @relation("ReferralTo", fields: [toId], references: [id])
+  patientName   String
+  purpose       String
+  commission    Float
+  status        String   @default("PENDING") // PENDING | COMPLETED | PAID
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────
+//  Rating — patient rates doctor/org
+// ─────────────────────────────────────────────────────────
+model Rating {
+  id            String   @id @default(cuid())
+  fromId        String
+  from          Account  @relation("RatingFrom", fields: [fromId], references: [id])
+  toId          String
+  to            Account  @relation("RatingTo", fields: [toId], references: [id])
+  score         Int      // 1-5
+  comment       String?
+  createdAt     DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────
+//  Partnership — tie-ups with blood testing clinics etc.
+// ─────────────────────────────────────────────────────────
+model Partnership {
+  id            String   @id @default(cuid())
+  orgId         String
+  org           Account  @relation("OrgPartnerships", fields: [orgId], references: [id])
+  clinicId      String
+  clinic        Account  @relation("ClinicPartnerships", fields: [clinicId], references: [id])
+  clinicType    String   // BLOOD_TEST | DIAGNOSTIC | PHARMACY
+  commissionRate Float
+  rating        Float    @default(0)
+  status        String   @default("ACTIVE")
+  createdAt     DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────
+//  OTP store — for forgot password & signup verification
+// ─────────────────────────────────────────────────────────
+model OtpStore {
+  id            String   @id @default(cuid())
+  identifier    String   // email or mobile
+  code          String
+  purpose       String   // SIGNUP | FORGOT_PASSWORD
+  expiresAt     DateTime
+  consumed      Boolean  @default(false)
+  attempts      Int      @default(0)   // failed verify attempts on this OTP
+  lockedUntil   DateTime?               // when set & in future, OTP is locked
+  createdAt     DateTime @default(now())
+
+  @@index([identifier, purpose, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Vitals — patient self-logged health metrics
+// ─────────────────────────────────────────────────────────
+model Vitals {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientVitals", fields: [patientId], references: [id], onDelete: Cascade)
+
+  // Measurements (any subset can be filled per entry)
+  systolic      Int?     // mmHg
+  diastolic     Int?     // mmHg
+  heartRate     Int?     // bpm
+  glucose       Float?   // mg/dL
+  weight        Float?   // kg
+  temperature   Float?   // °C
+  oxygenSat     Int?     // %
+  steps         Int?     // daily step count
+
+  note          String?
+  recordedAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([patientId, recordedAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Prescription refill request — patient asks doctor for refill
+// ─────────────────────────────────────────────────────────
+model RefillRequest {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientRefills", fields: [patientId], references: [id], onDelete: Cascade)
+  doctorId      String
+  doctor        Account  @relation("DoctorRefills", fields: [doctorId], references: [id])
+  recordId      String?  // optional reference to the originating MedicalRecord
+  medicineName  String
+  dosage        String
+  quantity      Int      @default(1)
+  note          String?
+  status        String   @default("PENDING") // PENDING | APPROVED | DENIED | FULFILLED
+  doctorNote    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([doctorId, status])
+  @@index([patientId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Lab order — patient orders tests from a partnered clinic/org
+// ─────────────────────────────────────────────────────────
+model LabOrder {
+  id            String   @id @default(cuid())
+  orderNumber   String   // human-readable, e.g. LAB-2024-0001
+  patientId     String
+  patient       Account  @relation("PatientLabOrders", fields: [patientId], references: [id], onDelete: Cascade)
+  labId         String   // the partnered clinic/org that will fulfill
+  lab           Account  @relation("LabLabOrders", fields: [labId], references: [id])
+  tests         String   // JSON array of test names
+  notes         String?
+  status        String   @default("REQUESTED") // REQUESTED | SAMPLE_COLLECTED | IN_PROGRESS | COMPLETED | CANCELLED
+  totalAmount   Float    @default(0)
+  paymentStatus String   @default("PENDING") // PENDING | PAID
+  reportUrl     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([labId, status])
+  @@index([patientId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Telemedicine session — video call link for confirmed appointments
+// ─────────────────────────────────────────────────────────
+model TelemedicineSession {
+  id            String   @id @default(cuid())
+  appointmentId String   @unique
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  meetingId     String   // short code, e.g. ABC-1234
+  meetingUrl    String   // full join URL
+  hostPin       String
+  participantPin String
+  status        String   @default("SCHEDULED") // SCHEDULED | LIVE | ENDED | CANCELLED
+  startedAt     DateTime?
+  endedAt       DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────
+//  Lab Test Catalog — managed by labs (DOCTOR/ORG accounts)
+//  Patients see real prices when ordering tests
+// ─────────────────────────────────────────────────────────
+model LabTestCatalog {
+  id            String   @id @default(cuid())
+  labId         String
+  lab           Account  @relation("LabTestCatalogs", fields: [labId], references: [id], onDelete: Cascade)
+  testName      String
+  category      String   // e.g. HEMATOLOGY, BIOCHEMISTRY, MICROBIOLOGY, IMAGING, CARDIOLOGY
+  description   String?
+  price         Float
+  durationMins  Int      @default(60) // expected turnaround time
+  sampleType    String?  // e.g. BLOOD, URINE, SWAB, NONE
+  fastingRequired Boolean @default(false)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([labId, isActive])
+  @@index([labId, category])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Notification Read — persists which notifications a user has dismissed
+//  (notifications are computed dynamically; this tracks "read" state only)
+// ─────────────────────────────────────────────────────────
+model NotificationRead {
+  id            String   @id @default(cuid())
+  userId        String
+  user          Account  @relation("UserNotifRead", fields: [userId], references: [id], onDelete: Cascade)
+  notificationKey String  // unique key from the notifications API (e.g. "appointment:{id}" or "insurance:due")
+  readAt        DateTime @default(now())
+
+  @@unique([userId, notificationKey])
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Chat message — secure messaging between patient & doctor/org
+// ─────────────────────────────────────────────────────────
+model ChatMessage {
+  id            String   @id @default(cuid())
+  fromId        String
+  from          Account  @relation("ChatFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  toId          String
+  to            Account  @relation("ChatTo", fields: [toId], references: [id], onDelete: Cascade)
+  body          String
+  attachmentName String?
+  readAt        DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([fromId, toId, createdAt])
+  @@index([toId, readAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Family Member — patient manages health profiles for family
+// ─────────────────────────────────────────────────────────
+model FamilyMember {
+  id            String   @id @default(cuid())
+  ownerId       String   // the patient Account who owns this profile
+  owner         Account  @relation("FamilyMembers", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  name          String
+  relation      String   // SPOUSE | SON | DAUGHTER | FATHER | MOTHER | BROTHER | SISTER | OTHER
+  gender        String?  // MALE | FEMALE | OTHER
+  dateOfBirth   DateTime?
+  bloodGroup    String?
+  phone         String?
+  email         String?
+
+  // Health info
+  allergies     String?  // comma-separated
+  chronicConditions String? // comma-separated
+  currentMedications String? // comma-separated
+  emergencyContact String?
+
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Medication Schedule — patient daily medicine adherence
+// ─────────────────────────────────────────────────────────
+model MedicationSchedule {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientMedications", fields: [patientId], references: [id], onDelete: Cascade)
+
+  medicineName  String
+  dosage        String   // e.g. "1 tablet", "5 mL"
+  frequency     String   // ONCE_DAILY | TWICE_DAILY | THRICE_DAILY | WEEKLY | AS_NEEDED
+  times         String   // JSON array of "HH:MM" strings, e.g. ["08:00","20:00"]
+  startDate     DateTime @default(now())
+  endDate       DateTime?
+  instructions  String?  // e.g. "After meals"
+  prescribedBy  String?  // doctor name
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  logs          MedicationLog[]
+
+  @@index([patientId, isActive])
+}
+
+model MedicationLog {
+  id            String   @id @default(cuid())
+  medicationId  String
+  medication    MedicationSchedule @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+  patientId     String
+  patient       Account  @relation("PatientMedLogs", fields: [patientId], references: [id], onDelete: Cascade)
+
+  scheduledTime String   // "HH:MM"
+  scheduledDate DateTime // the calendar day
+  takenAt       DateTime? // null = not yet taken
+  skipped       Boolean  @default(false)
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  @@unique([medicationId, scheduledDate, scheduledTime])
+  @@index([patientId, scheduledDate])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Emergency Alert — patient SOS broadcasts
+// ─────────────────────────────────────────────────────────
+model EmergencyAlert {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientEmergencyAlerts", fields: [patientId], references: [id], onDelete: Cascade)
+
+  type          String   // MEDICAL | ACCIDENT | CARDIAC | BREATHING | FALL | OTHER
+  severity      String   @default("HIGH") // LOW | MODERATE | HIGH | CRITICAL
+  status        String   @default("ACTIVE") // ACTIVE | RESOLVED | CANCELLED
+  lat           String?
+  lng           String?
+  addressSnapshot String?
+  description   String?
+  notifiedContacts String? // JSON array of contact names/numbers notified
+  resolvedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([patientId, status])
+  @@index([status, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  Health Goal — patient self-set wellness targets
+// ─────────────────────────────────────────────────────────
+model HealthGoal {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientGoals", fields: [patientId], references: [id], onDelete: Cascade)
+
+  title         String
+  metric        String   // STEPS | WEIGHT | BP_SYSTOLIC | BP_DIASTOLIC | HEART_RATE | SLEEP_HOURS | WATER_INTAKE | EXERCISE_MINS | GLUCOSE
+  targetValue   Float
+  currentValue  Float   @default(0)
+  unit          String   // steps, kg, mmHg, bpm, hours, mL, mins, mg/dL
+  period        String   @default("DAILY") // DAILY | WEEKLY | MONTHLY | ONE_TIME
+  status        String   @default("ACTIVE") // ACTIVE | COMPLETED | PAUSED | FAILED
+  startDate     DateTime @default(now())
+  endDate       DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  logs          GoalLog[]
+
+  @@index([patientId, status])
+}
+
+model GoalLog {
+  id            String   @id @default(cuid())
+  goalId        String
+  goal          HealthGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  patientId     String
+  patient       Account  @relation("PatientGoalLogs", fields: [patientId], references: [id], onDelete: Cascade)
+
+  value         Float
+  loggedAt      DateTime @default(now())
+  note          String?
+
+  @@index([goalId, loggedAt])
+  @@index([patientId, loggedAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  MoM Point 8 — Patient QR Code (quick check-in at clinics)
+// ─────────────────────────────────────────────────────────
+model PatientQrCode {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientQrCodes", fields: [patientId], references: [id], onDelete: Cascade)
+
+  // The QR payload (encrypted JSON) — contains patient id, name, blood group,
+  // allergies, chronic conditions. Doctors scan this to instantly pull up a
+  // patient's summary at the point of care.
+  payload       String   // AES-256-CBC encrypted JSON
+  payloadHash   String   // for tamper detection
+  purpose       String   @default("CHECKIN") // CHECKIN | RECORD_ACCESS | EMERGENCY
+  isActive      Boolean  @default(true)
+  expiresAt     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([patientId, isActive])
+}
+
+// ─────────────────────────────────────────────────────────
+//  MoM Point — BMI Tracker (patient wellness)
+// ─────────────────────────────────────────────────────────
+model BmiLog {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientBmiLogs", fields: [patientId], references: [id], onDelete: Cascade)
+
+  heightCm      Float    // stored once per entry so historical changes are tracked
+  weightKg      Float
+  bmi           Float    // computed: weightKg / (heightM^2)
+  category      String   // UNDERWEIGHT | NORMAL | OVERWEIGHT | OBESE
+  note          String?
+  loggedAt      DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([patientId, loggedAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  MoM Point — Menstrual Cycle Tracker (female patients)
+// ─────────────────────────────────────────────────────────
+model MenstrualCycleLog {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientMenstrualLogs", fields: [patientId], references: [id], onDelete: Cascade)
+
+  startDate     DateTime // first day of period
+  endDate       DateTime?
+  flowLevel     String   @default("MODERATE") // LIGHT | MODERATE | HEAVY
+  symptoms      String?  // JSON array: cramps, headache, bloating, fatigue, mood, etc.
+  mood          String?  // HAPPY | SAD | IRRITABLE | ANXIOUS | NEUTRAL
+  notes         String?
+  cycleLength   Int?     // days since previous period start (computed server-side)
+  periodLength  Int?     // endDate - startDate in days
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([patientId, startDate])
+}
+
+// ─────────────────────────────────────────────────────────
+//  MoM Point 12 — Voice Memo (recording → AI categorization)
+// ─────────────────────────────────────────────────────────
+model VoiceMemo {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientVoiceMemos", fields: [patientId], references: [id], onDelete: Cascade)
+
+  // We store the transcript only (audio is too heavy for SQLite).
+  // Frontend records → /api/ai/transcribe (ASR) → transcript saved here.
+  transcript    String
+  durationSec   Int      @default(0)
+  language      String   @default("en-IN")
+
+  // AI categorization result
+  category      String?  // SYMPTOM | MEDICATION | APPOINTMENT_NOTE | EMERGENCY | GENERAL
+  summary       String?  // LLM-generated summary
+  suggestedActions String? // JSON array of next-step suggestions
+  recordId      String?  // if it became a MedicalRecord
+
+  createdAt     DateTime @default(now())
+
+  @@index([patientId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  MoM Point 4 — Capacity-per-hour slots (doctor/org)
+//  Each doctor/org defines slots; appointments link to a slot.
+// ─────────────────────────────────────────────────────────
+model CapacitySlot {
+  id            String   @id @default(cuid())
+  doctorId      String   // Account id (DOCTOR or ORGANIZATION)
+  doctor        Account  @relation("DoctorCapacitySlots", fields: [doctorId], references: [id], onDelete: Cascade)
+
+  startAt       DateTime // slot start (e.g. 2024-12-01T10:00:00)
+  endAt         DateTime // slot end (e.g. 2024-12-01T11:00:00)
+  capacity      Int      @default(1) // max patients in this slot
+  bookedCount   Int      @default(0) // current bookings
+  status        String   @default("OPEN") // OPEN | FULL | CLOSED
+  notes         String?  // e.g. "Walk-in only", "Telemedicine"
+
+  appointments  Appointment[] @relation("SlotAppointments")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([doctorId, startAt])
+  @@index([status, startAt])
+}
+
+// ─────────────────────────────────────────────────────────
+//  MoM Point 11 — ABDM (Ayushman Bharat Digital Mission) Link
+// ─────────────────────────────────────────────────────────
+model AbdmLink {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Account  @relation("PatientAbdmLinks", fields: [patientId], references: [id], onDelete: Cascade)
+
+  abhaNumber    String   @unique // 14-digit ABHA number
+  healthId      String?  // e.g. john@abdm
+  nameOnAbha    String?
+  genderOnAbha  String?
+  yearOfBirth   Int?
+  mobileOnAbha  String?
+  status        String   @default("LINKED") // LINKED | UNLINKED | PENDING
+  authMethod    String?  // MOBILE_OTP | AADHAAR_OTP | BIOMETRIC
+  linkedAt      DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────
+//  MoM Point — Insurance Providers master directory
+//  (insurance companies database, browsable by patients)
+// ─────────────────────────────────────────────────────────
+model InsuranceProvider {
+  id            String   @id @default(cuid())
+  name          String   @unique
+  logoUrl       String?
+  website       String?
+  contactEmail  String?
+  contactPhone  String?
+  categories    String   // JSON array: HEALTH, LIFE, CRITICAL_ILLNESS, FAMILY_FLOATER, SENIOR_CITIZEN
+  networkHospitals Int   @default(0)
+  cashless      Boolean  @default(true)
+  rating        Float    @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+}
+
+// ─────────────────────────────────────────────────────────
+//  MoM Point 10 — Doctor Directory (category + area)
+//  Public-facing directory of doctors, searchable by
+//  specialization, city, pincode, rating — surfaced on the
+//  patient Home tab and an "All Doctors" tab.
+// ─────────────────────────────────────────────────────────
+model DoctorDirectoryEntry {
+  id            String   @id @default(cuid())
+  doctorId      String   @unique // one entry per doctor Account
+  doctor        Account  @relation("DoctorDirectoryEntries", fields: [doctorId], references: [id], onDelete: Cascade)
+
+  specialization String
+  category      String   // e.g. GENERAL_MEDICINE, CARDIOLOGY, PEDIATRICS, ORTHOPEDICS, DERMATOLOGY, GYNECOLOGY, ENT, DENTAL, AYURVEDA, HOMEOPATHY
+  city          String
+  state         String
+  pincode       String
+  area          String?  // locality / neighborhood
+  experienceYears Int    @default(0)
+  qualifications String? // e.g. "MBBS, MD (Medicine)"
+  languages     String?  // JSON array: ["English","Hindi","Marathi"]
+  consultationFee Float  @default(0)
+  isAvailable   Boolean  @default(true)
+  rating        Float    @default(0)
+  totalRatings  Int      @default(0)
+  searchVector  String?  // precomputed lowercase concat for full-text search
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([category, city])
+  @@index([specialization, pincode])
+  @@index([city, isAvailable])
+}

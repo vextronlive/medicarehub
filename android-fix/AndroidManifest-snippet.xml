@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ─────────────────────────────────────────────────────────────────────────
+  ANDROID MANIFEST — REQUIRED PERMISSIONS FOR MICROPHONE + CAMERA
+  ─────────────────────────────────────────────────────────────────────────
+
+  Copy these <uses-permission> lines into your
+  android/app/src/main/AndroidManifest.xml
+  (inside the <manifest> tag, BEFORE the <application> tag).
+
+  Without RECORD_AUDIO, getUserMedia will ALWAYS fail in the APK even with
+  the MainActivity.java fix. The CAMERA permission is needed for the
+  prescription-scanner feature.
+
+  The Android 12+ BLUETOOTH permissions are optional — only needed if you
+  plan to connect Bluetooth medical devices.
+  ─────────────────────────────────────────────────────────────────────────
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ── REQUIRED FOR MICROPHONE (voice memo feature) ── -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- ── REQUIRED FOR CAMERA (prescription scanner) ── -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- ── ALREADY IN YOUR APP (network + biometric + location) ── -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- ── OPTIONAL: Bluetooth (for future medical device support) ── -->
+    <!--
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    -->
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/AppTheme">
+
+        <!-- This <activity> block is ALREADY in your manifest — don't duplicate it.
+             Shown here just for context. -->
+        <!--
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/AppTheme.NoActionBarLaunch">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        -->
+
+    </application>
+</manifest>

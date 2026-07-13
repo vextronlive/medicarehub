@@ -1,0 +1,54 @@
+{
+  "name": "MediCare Hub — Unified Healthcare Platform",
+  "short_name": "MediCare Hub",
+  "description": "Connect patients, doctors and hospitals on one secure, AI-powered healthcare platform. Manage appointments, encrypted records, referrals, QR codes and AI insights.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0d9488",
+  "categories": ["medical", "health", "lifestyle"],
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Book Appointment",
+      "short_name": "Appointment",
+      "url": "/?action=appointment",
+      "description": "Book a new appointment with Aadhaar verification"
+    },
+    {
+      "name": "My QR Codes",
+      "short_name": "QR",
+      "url": "/?action=qr",
+      "description": "View your patient QR codes"
+    },
+    {
+      "name": "Find Doctors",
+      "short_name": "Doctors",
+      "url": "/?action=doctors",
+      "description": "Search doctors by category and pincode"
+    }
+  ]
+}
