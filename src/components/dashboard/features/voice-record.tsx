@@ -617,7 +617,10 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
         audioCtxRef.current = ctx
         const source = ctx.createMediaStreamSource(stream)
         const analyserNode = ctx.createAnalyser()
-        analyserNode.fftSize = 64
+        // 2048 gives a stable RMS reading (32 samples is too noisy and
+        // trips the "no audio detected" warning on perfectly good mics).
+        analyserNode.fftSize = 2048
+        analyserNode.smoothingTimeConstant = 0.6
         source.connect(analyserNode)
         analyserRef.current = analyserNode
         setAnalyser(analyserNode)
@@ -626,14 +629,41 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
         setAnalyser(null)
       }
 
-      // Set up MediaRecorder
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : MediaRecorder.isTypeSupported("audio/webm")
-          ? "audio/webm"
-          : "audio/mp4"
-
-      const recorder = new MediaRecorder(stream, { mimeType })
+      // Set up MediaRecorder.
+      // Some browsers/WebViews don't implement MediaRecorder.isTypeSupported
+      // (throws "isTypeSupported is not a function"), and some accept a
+      // mimeType in isTypeSupported but then reject it in the constructor.
+      // We try each candidate in order, falling back to letting the browser
+      // pick its own default (passing NO mimeType option) — which always
+      // works.
+      const candidateMimeTypes = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+        "audio/ogg;codecs=opus",
+      ]
+      let recorder: MediaRecorder
+      let chosenMime = ""
+      const isSupported = (m: string) => {
+        try {
+          return (
+            typeof MediaRecorder !== "undefined" &&
+            typeof MediaRecorder.isTypeSupported === "function" &&
+            MediaRecorder.isTypeSupported(m)
+          )
+        } catch {
+          return false
+        }
+      }
+      try {
+        chosenMime = candidateMimeTypes.find(isSupported) || ""
+        recorder = chosenMime
+          ? new MediaRecorder(stream, { mimeType: chosenMime })
+          : new MediaRecorder(stream) // browser picks default
+      } catch {
+        // Final fallback: no mimeType option at all.
+        recorder = new MediaRecorder(stream)
+      }
       chunksRef.current = []
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data)
@@ -686,35 +716,62 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
             // Common errors: "network" (Web Speech API needs internet on Vercel),
             // "not-allowed" (browser mic permission), "no-speech" (silent mic),
             // "aborted" (user stopped — expected, ignore).
+            //
+            // CRITICAL: Fatal errors (not-allowed, service-not-allowed,
+            // audio-capture) must mark speech as dead so the onend handler
+            // does NOT auto-restart — otherwise we get an infinite loop of
+            // error → end → restart → error → ... spamming the user with
+            // toasts. "network" is retried because it may be transient.
+            // "no-speech" / "aborted" are benign and restart is fine.
+            let speechDead = false
+            let lastErrorToast = 0
+            const showErrorToast = (title: string, desc: string) => {
+              // Dedupe: don't show the same error toast more than once
+              // per 10 seconds.
+              const now = Date.now()
+              if (now - lastErrorToast < 10000) return
+              lastErrorToast = now
+              toast.error(title, { description: desc })
+            }
             rec.onerror = (e) => {
               const err = e?.error || "unknown"
               if (err === "aborted" || err === "no-speech") return // benign
               speechErrorRef.current = err
               if (err === "network") {
-                toast.error("Speech recognition lost network connection", {
-                  description: "Web Speech API needs internet. Check your connection — recording continues but live transcript may be incomplete.",
-                })
+                showErrorToast(
+                  "Speech recognition lost network connection",
+                  "Web Speech API needs internet. Check your connection — recording continues but live transcript may be incomplete."
+                )
               } else if (err === "not-allowed" || err === "service-not-allowed") {
-                toast.error("Browser blocked speech recognition", {
-                  description: "Allow microphone access in your browser and try again.",
-                })
+                // FATAL — don't restart. Recording continues via MediaRecorder;
+                // the server-side ASR fallback (or the client transcript if
+                // partial) will handle transcription on stop.
+                speechDead = true
+                showErrorToast(
+                  "Live transcription unavailable",
+                  "Browser blocked Web Speech API. Recording continues — your audio will still be transcribed when you stop."
+                )
               } else if (err === "audio-capture") {
-                toast.error("No microphone detected", {
-                  description: "Connect a mic and try again.",
-                })
+                speechDead = true
+                showErrorToast(
+                  "No microphone detected",
+                  "Connect a mic and try again."
+                )
               }
             }
             // CRITICAL FIX: Web Speech API auto-stops after a few seconds
-            // of silence (or after ~60s of continuous speech). The original
-            // code had a comment "may restart if still recording" but did
-            // NOTHING — so if the user paused for breath, recognition died
-            // and everything said afterwards was lost. Now we actually
-            // restart it as long as we're still recording.
+            // of silence (or after ~60s of continuous speech). Restart it
+            // as long as we're still recording AND speech hasn't fatally
+            // errored. Without the speechDead check, a not-allowed error
+            // causes an infinite restart loop (each restart immediately
+            // errors again).
             rec.onend = () => {
               if (!isRecordingRef.current) return
+              if (speechDead) return
               // Small delay to avoid tight-loop if start() keeps failing
               setTimeout(() => {
                 if (!isRecordingRef.current) return
+                if (speechDead) return
                 try {
                   rec.start()
                 } catch {
@@ -734,11 +791,19 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
       // tracks the peak RMS. Used to detect a silent mic (hardware mute,
       // wrong input device, etc.) so we can warn the user instead of
       // silently letting them record 60 seconds of nothing.
+      //
+      // IMPORTANT: This is a HEURISTIC, not a hard gate. We only SHOW a
+      // non-blocking warning toast — we never abort the recording. The
+      // user's mic might be fine even if RMS is low (quiet talker, noise
+      // suppression, browser echo cancellation eating the signal, etc).
+      // The actual "did we get audio" decision happens after stop, based
+      // on the recorded BLOB SIZE, which is the only reliable signal.
       peakAudioLevelRef.current = 0
-      let silentSecondsLogged = 0
+      let silentSamples = 0
+      let warnedNoAudio = false
       if (analyserRef.current) {
         const an = analyserRef.current
-        const dataArray = new Uint8Array(an.frequencyBinCount)
+        const dataArray = new Uint8Array(an.fftSize)
         audioLevelTimerRef.current = setInterval(() => {
           an.getByteTimeDomainData(dataArray)
           // Compute RMS around 128 (silence center)
@@ -751,17 +816,21 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
           if (rms > peakAudioLevelRef.current) {
             peakAudioLevelRef.current = rms
           }
-          // Warn once after ~3s of pure silence
-          if (rms < 2) {
-            silentSecondsLogged++
-            if (silentSecondsLogged === 10) { // ~3s at 300ms interval
+          // Warn ONCE after ~6s of CONTINUOUS silence (20 samples × 300ms).
+          // 6s gives the user time to start speaking before we warn.
+          // Threshold 1 (not 2) — with smoothing, normal speech RMS is
+          // usually 5-30; pure silence is <0.5.
+          if (rms < 1) {
+            silentSamples++
+            if (!warnedNoAudio && silentSamples >= 20) {
+              warnedNoAudio = true
               toast.warning("No microphone audio detected", {
                 description: "Check that your mic is unmuted and selected as the default input device. Recording continues, but transcript may be empty.",
-                duration: 8000,
+                duration: 6000,
               })
             }
           } else {
-            silentSecondsLogged = 0
+            silentSamples = 0
           }
         }, 300)
       }
@@ -947,31 +1016,52 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
 
   const handleStopAndTranscribe = useCallback(async () => {
     const recorder = mediaRecorderRef.current
-    if (!recorder || recorder.state === "inactive") {
-      cleanupRecording()
-      return
-    }
-
-    // Stop recorder and wait for final ondataavailable + onstop
-    await new Promise<void>((resolve) => {
-      recorder.onstop = () => resolve()
-      recorder.stop()
-    })
-
-    // Grab the Web Speech API transcript BEFORE cleanup (which stops recognition)
+    // Capture the Web Speech transcript BEFORE cleanup (which stops
+    // recognition). We do this FIRST because cleanup may be triggered by
+    // the auto-stop timer, and we need the transcript regardless.
     const clientTranscript = liveTranscriptRef.current.trim()
-    const peakLevel = peakAudioLevelRef.current
     const recSeconds = secondsRef.current
+    // Snapshot chunks NOW, before cleanup, so we have the audio data even
+    // if the recorder was already stopped by the time the user clicks stop.
+    const chunksSnapshot = chunksRef.current.slice()
+    const recordedMimeType = recorder?.mimeType || "audio/webm"
+
+    // Stop the recorder if it's still active, and wait for the final
+    // ondataavailable + onstop so the last audio chunk is flushed.
+    // NOTE: We do NOT bail out if recorder.state === "inactive" — the
+    // recording may have already stopped (e.g. auto-stop at MAX_REC_SECONDS,
+    // or the browser stopped it for security reasons) but the already-
+    // captured chunks in chunksRef are still valid and must be transcribed.
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        await new Promise<void>((resolve) => {
+          recorder.onstop = () => resolve()
+          recorder.stop()
+        })
+      } catch {
+        // recorder.stop() can throw if already stopping — ignore, we have the chunks
+      }
+    }
 
     cleanupRecording()
 
-    const blob = new Blob(chunksRef.current, {
-      type: recorder.mimeType || "audio/webm",
+    // Merge any chunks that arrived during recorder.stop() (the final flush).
+    const allChunks = chunksSnapshot.length >= chunksRef.current.length
+      ? chunksSnapshot
+      : chunksRef.current.slice()
+
+    const blob = new Blob(allChunks, {
+      type: recordedMimeType,
     })
 
-    // Diagnostic: if mic was essentially silent the whole time, tell the user
-    // instead of letting them think the recording worked.
-    if (peakLevel < 2 && recSeconds >= 2) {
+    // Diagnostic: if the recorded blob is essentially empty (tiny size),
+    // the mic really didn't capture anything. blob.size is the ONLY reliable
+    // signal — the RMS-based peakLevel is a heuristic that can read 0 if
+    // the AudioContext was suspended, the analyser wasn't connected, or the
+    // browser's echo cancellation aggressively suppressed the signal. A real
+    // 2s+ recording always produces >2KB of webm/opus data, so <500 bytes
+    // is unambiguous proof of a silent/dead mic.
+    if (blob.size < 500 && recSeconds >= 2) {
       toast.error("Microphone captured no audio", {
         description:
           "Your mic appears to be muted, disconnected, or the wrong device. Check your system's microphone settings and try again.",
