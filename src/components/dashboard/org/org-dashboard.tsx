@@ -890,6 +890,8 @@ function HomeTab({
                   : "No appointments today"
               }
               color="bg-emerald-50 text-emerald-600"
+              accent="from-emerald-500 to-teal-500"
+              onClick={() => onNavigate("appointments")}
             />
             <StatCard
               title="Total Patients"
@@ -897,6 +899,8 @@ function HomeTab({
               icon={Users}
               trend="Distinct patients in records"
               color="bg-teal-50 text-teal-600"
+              accent="from-teal-500 to-cyan-500"
+              onClick={() => onNavigate("records")}
             />
             <StatCard
               title="Pending Confirmations"
@@ -908,6 +912,8 @@ function HomeTab({
                   : "All caught up"
               }
               color="bg-amber-50 text-amber-600"
+              accent="from-amber-500 to-orange-500"
+              onClick={() => onNavigate("appointments")}
             />
             <StatCard
               title="Bed Occupancy"
@@ -919,6 +925,8 @@ function HomeTab({
                   : "Set bed count in Accounts"
               }
               color="bg-fuchsia-50 text-fuchsia-600"
+              accent="from-fuchsia-500 to-pink-500"
+              onClick={() => onNavigate("accounts")}
             />
           </>
         )}

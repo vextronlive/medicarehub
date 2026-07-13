@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 import type { LucideIcon } from "lucide-react"
 import { motion } from "framer-motion"
+import { ArrowUpRight } from "lucide-react"
 
 export function StatCard({
   title,
@@ -13,6 +14,7 @@ export function StatCard({
   trendUp,
   color = "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10",
   accent = "from-emerald-500 to-teal-500",
+  onClick,
 }: {
   title: string
   value: string | number
@@ -21,13 +23,36 @@ export function StatCard({
   trendUp?: boolean
   color?: string
   accent?: string
+  onClick?: () => void
 }) {
+  const clickable = typeof onClick === "function"
   return (
-    <Card className="group relative overflow-hidden transition-all duration-300 hover:-translate-y-1 hover:shadow-lg hover:shadow-emerald-500/5">
+    <Card
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      aria-label={clickable ? `Open ${title}` : undefined}
+      onClick={onClick}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                onClick!()
+              }
+            }
+          : undefined
+      }
+      className={cn(
+        "group relative overflow-hidden transition-all duration-300",
+        clickable &&
+          "cursor-pointer hover:-translate-y-1 hover:shadow-lg hover:shadow-emerald-500/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+      )}
+    >
       {/* Gradient accent bar on top */}
       <div
         className={cn(
-          "absolute inset-x-0 top-0 h-1 bg-gradient-to-r opacity-0 transition-opacity duration-300 group-hover:opacity-100",
+          "absolute inset-x-0 top-0 h-1 bg-gradient-to-r transition-opacity duration-300",
+          clickable ? "opacity-60 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100",
           accent
         )}
       />
@@ -47,6 +72,19 @@ export function StatCard({
           backgroundSize: "12px 12px",
         }}
       />
+      {/* Click affordance: top-right arrow badge — always visible (low opacity), full on hover/focus */}
+      {clickable && (
+        <div
+          className={cn(
+            "absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br text-white shadow-sm transition-all duration-300 group-hover:opacity-100 group-focus-visible:opacity-100 group-hover:-translate-y-0.5 group-hover:translate-x-0.5",
+            accent,
+            "opacity-70"
+          )}
+          aria-hidden="true"
+        >
+          <ArrowUpRight className="h-3.5 w-3.5" />
+        </div>
+      )}
       <CardContent className="relative flex items-center justify-between p-5">
         <div className="min-w-0">
           <p className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">

@@ -826,6 +826,7 @@ function HomeTab({
           accent="from-emerald-500 to-teal-500"
           trend={upcoming.length > 0 ? "Next visit scheduled" : "Nothing due"}
           trendUp={upcoming.length > 0}
+          onClick={() => onSwitchTab("appointments")}
         />
         <StatCard
           title="Medical Records"
@@ -834,6 +835,7 @@ function HomeTab({
           color="bg-teal-50 text-teal-600 dark:bg-teal-500/10"
           accent="from-teal-500 to-cyan-500"
           trend="Lifetime history"
+          onClick={() => onSwitchTab("records")}
         />
         <StatCard
           title="Insurance"
@@ -847,6 +849,7 @@ function HomeTab({
           accent={insurance ? "from-emerald-500 to-teal-500" : "from-amber-500 to-orange-500"}
           trend={insurance ? insurance.providerName : "Not linked"}
           trendUp={!!insurance}
+          onClick={() => onSwitchTab("insurance-directory")}
         />
         <StatCard
           title="Blood Group"
@@ -855,6 +858,7 @@ function HomeTab({
           color="bg-rose-50 text-rose-600 dark:bg-rose-500/10"
           accent="from-rose-500 to-pink-500"
           trend="On profile"
+          onClick={() => onSwitchTab("accounts")}
         />
       </div>
 
