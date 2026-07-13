@@ -439,6 +439,9 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
   const [isRecording, setIsRecording] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [seconds, setSeconds] = useState(0)
+  // Mirror `seconds` into a ref so async callbacks (like handleStopAndTranscribe
+  // after MediaRecorder's onstop) can read the latest value without stale closure.
+  const secondsRef = useRef(0)
   const [permissionDenied, setPermissionDenied] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [openingSettings, setOpeningSettings] = useState(false)
@@ -464,6 +467,14 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
   const recognitionRef = useRef<unknown>(null)
   const liveTranscriptRef = useRef<string>("")
   const [liveTranscript, setLiveTranscript] = useState("")
+
+  // Recording-state + audio-level tracking — used inside Web Speech API
+  // callbacks (which can fire AFTER React state updates settle, so we need
+  // refs to read the live value).
+  const isRecordingRef = useRef(false)
+  const peakAudioLevelRef = useRef(0) // 0..255 RMS peak since recording started
+  const audioLevelTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const speechErrorRef = useRef<string | null>(null)
 
   // Check if Web Speech API is available
   const hasWebSpeech =
@@ -634,10 +645,13 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
       mediaRecorderRef.current = recorder
       setIsRecording(true)
       setSeconds(0)
+      secondsRef.current = 0
 
       // Start Web Speech API for live transcription (primary on Vercel)
       liveTranscriptRef.current = ""
       setLiveTranscript("")
+      speechErrorRef.current = null
+      isRecordingRef.current = true
       if (hasWebSpeech) {
         try {
           const SpeechRecognitionCtor =
@@ -652,7 +666,7 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
               interimResults: boolean
               lang: string
               onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> & { length: number } }) => void) | null
-              onerror: (() => void) | null
+              onerror: ((e: { error?: string; message?: string }) => void) | null
               onend: (() => void) | null
               start: () => void
               stop: () => void
@@ -668,8 +682,46 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
               liveTranscriptRef.current = full
               setLiveTranscript(full)
             }
-            rec.onerror = () => { /* silent — MediaRecorder is backup */ }
-            rec.onend = () => { /* may restart if still recording */ }
+            // Surface real errors instead of swallowing them silently.
+            // Common errors: "network" (Web Speech API needs internet on Vercel),
+            // "not-allowed" (browser mic permission), "no-speech" (silent mic),
+            // "aborted" (user stopped — expected, ignore).
+            rec.onerror = (e) => {
+              const err = e?.error || "unknown"
+              if (err === "aborted" || err === "no-speech") return // benign
+              speechErrorRef.current = err
+              if (err === "network") {
+                toast.error("Speech recognition lost network connection", {
+                  description: "Web Speech API needs internet. Check your connection — recording continues but live transcript may be incomplete.",
+                })
+              } else if (err === "not-allowed" || err === "service-not-allowed") {
+                toast.error("Browser blocked speech recognition", {
+                  description: "Allow microphone access in your browser and try again.",
+                })
+              } else if (err === "audio-capture") {
+                toast.error("No microphone detected", {
+                  description: "Connect a mic and try again.",
+                })
+              }
+            }
+            // CRITICAL FIX: Web Speech API auto-stops after a few seconds
+            // of silence (or after ~60s of continuous speech). The original
+            // code had a comment "may restart if still recording" but did
+            // NOTHING — so if the user paused for breath, recognition died
+            // and everything said afterwards was lost. Now we actually
+            // restart it as long as we're still recording.
+            rec.onend = () => {
+              if (!isRecordingRef.current) return
+              // Small delay to avoid tight-loop if start() keeps failing
+              setTimeout(() => {
+                if (!isRecordingRef.current) return
+                try {
+                  rec.start()
+                } catch {
+                  // start() throws if already started — ignore
+                }
+              }, 250)
+            }
             rec.start()
             recognitionRef.current = recognition
           }
@@ -678,13 +730,51 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
         }
       }
 
+      // Start audio-level monitor — samples the analyser every 300ms and
+      // tracks the peak RMS. Used to detect a silent mic (hardware mute,
+      // wrong input device, etc.) so we can warn the user instead of
+      // silently letting them record 60 seconds of nothing.
+      peakAudioLevelRef.current = 0
+      let silentSecondsLogged = 0
+      if (analyserRef.current) {
+        const an = analyserRef.current
+        const dataArray = new Uint8Array(an.frequencyBinCount)
+        audioLevelTimerRef.current = setInterval(() => {
+          an.getByteTimeDomainData(dataArray)
+          // Compute RMS around 128 (silence center)
+          let sumSq = 0
+          for (let i = 0; i < dataArray.length; i++) {
+            const v = dataArray[i] - 128
+            sumSq += v * v
+          }
+          const rms = Math.sqrt(sumSq / dataArray.length)
+          if (rms > peakAudioLevelRef.current) {
+            peakAudioLevelRef.current = rms
+          }
+          // Warn once after ~3s of pure silence
+          if (rms < 2) {
+            silentSecondsLogged++
+            if (silentSecondsLogged === 10) { // ~3s at 300ms interval
+              toast.warning("No microphone audio detected", {
+                description: "Check that your mic is unmuted and selected as the default input device. Recording continues, but transcript may be empty.",
+                duration: 8000,
+              })
+            }
+          } else {
+            silentSecondsLogged = 0
+          }
+        }, 300)
+      }
+
       timerRef.current = setInterval(() => {
         setSeconds((s) => {
-          if (s + 1 >= MAX_REC_SECONDS) {
+          const next = s + 1
+          secondsRef.current = next
+          if (next >= MAX_REC_SECONDS) {
             // auto-stop at cap
             void handleStopAndTranscribe()
           }
-          return s + 1
+          return next
         })
       }, 1000)
 
@@ -821,7 +911,14 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
   const cleanupRecording = useCallback(() => {
     stopTimer()
     setIsRecording(false)
+    // Signal Web Speech API onend handler to NOT restart
+    isRecordingRef.current = false
     setAnalyser(null)
+    // Stop audio-level monitor
+    if (audioLevelTimerRef.current) {
+      clearInterval(audioLevelTimerRef.current)
+      audioLevelTimerRef.current = null
+    }
     // Stop Web Speech API recognition
     if (recognitionRef.current) {
       try {
@@ -863,6 +960,8 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
 
     // Grab the Web Speech API transcript BEFORE cleanup (which stops recognition)
     const clientTranscript = liveTranscriptRef.current.trim()
+    const peakLevel = peakAudioLevelRef.current
+    const recSeconds = secondsRef.current
 
     cleanupRecording()
 
@@ -870,8 +969,28 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
       type: recorder.mimeType || "audio/webm",
     })
 
+    // Diagnostic: if mic was essentially silent the whole time, tell the user
+    // instead of letting them think the recording worked.
+    if (peakLevel < 2 && recSeconds >= 2) {
+      toast.error("Microphone captured no audio", {
+        description:
+          "Your mic appears to be muted, disconnected, or the wrong device. Check your system's microphone settings and try again.",
+        duration: 9000,
+      })
+      return
+    }
+
     // If we have a Web Speech API transcript, use it directly (works on Vercel)
     if (clientTranscript.length > 3) {
+      // Warn if transcript is suspiciously short relative to recording duration
+      // (e.g. 10s of recording but only 5 chars transcribed — likely speech
+      // recognition missed most of it).
+      if (clientTranscript.length < 10 && recSeconds >= 5) {
+        toast.warning("Speech recognition captured very little text", {
+          description: `Recorded ${recSeconds}s but only got "${clientTranscript}". Try speaking louder and closer to the mic, or check your browser's language settings.`,
+          duration: 9000,
+        })
+      }
       setIsTranscribing(true)
       try {
         const res = await apiFetch<TranscribeResponse>("/api/ai/transcribe", {
@@ -984,6 +1103,7 @@ export function VoiceRecord({ onConvertToRecord, onEmergency }: VoiceRecordProps
     setSavedMemoId(null)
     setErrorMessage(null)
     setSeconds(0)
+    secondsRef.current = 0
     setLiveTranscript("")
     liveTranscriptRef.current = ""
   }, [])

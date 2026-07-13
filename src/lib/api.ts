@@ -71,6 +71,30 @@ export async function apiFetch<T = unknown>(
   if (token) headers["Authorization"] = `Bearer ${token}`
 
   const res = await fetch(apiUrl(path), { ...options, headers })
+  // 413 / 429 / 502 / 504 may come from the platform (Vercel gateway) BEFORE
+  // the route handler runs, often as a non-JSON body. Provide a clear message
+  // so the UI toast is actionable instead of "Request failed (413)".
+  if (
+    res.status === 413 ||
+    res.status === 429 ||
+    res.status === 502 ||
+    res.status === 504
+  ) {
+    const data = await res.json().catch(() => ({}))
+    const fallback: Record<number, string> = {
+      413: "The uploaded image is still too large after optimization. Please try a smaller or clearer photo.",
+      429: "Too many requests — please wait a moment and try again.",
+      502: "The server took too long to respond. Please try again.",
+      504: "The server timed out. Please try again.",
+    }
+    const msg =
+      (data && (data.error || data.message)) || fallback[res.status]
+    throw new ApiError(
+      typeof msg === "string" ? msg : "Request failed",
+      res.status,
+      data
+    )
+  }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const msg =

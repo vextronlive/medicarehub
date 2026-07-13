@@ -83,6 +83,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { cn, doctorName } from "@/lib/utils"
+import { compressImage, formatBytes } from "@/lib/image-compress"
 import { toast } from "sonner"
 
 import {
@@ -390,19 +391,10 @@ function getCurrentPosition(): Promise<GeolocationPosition> {
   })
 }
 
-function fileToBase64(file: File): Promise<{ base64: string; mime: string }> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result as string
-      const commaIdx = result.indexOf(",")
-      const base64 = commaIdx >= 0 ? result.slice(commaIdx + 1) : result
-      resolve({ base64, mime: file.type || "image/jpeg" })
-    }
-    reader.onerror = () => reject(new Error("Failed to read file."))
-    reader.readAsDataURL(file)
-  })
-}
+// NOTE: Image → base64 conversion now goes through `compressImage` from
+// `@/lib/image-compress`. Camera photos are 3-10MB+ at full resolution and
+// blow past the serverless body-size limit (413 error) when base64-encoded.
+// `compressImage` resizes to ≤1600px and re-encodes as JPEG 0.85 first.
 
 function parsePrescription(
   p: string
@@ -2254,20 +2246,45 @@ function PrescriptionScanner() {
       toast.error("Please upload an image file (JPG, PNG, etc).")
       return
     }
+    // Hard ceiling: reject anything absurdly large BEFORE we even try to
+    // decode it (avoids freezing low-end phones on a 50MB HEIC burst).
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error(
+        `Image is ${formatBytes(file.size)} — please pick an image under 25MB.`
+      )
+      return
+    }
     setFileName(file.name)
     setLoading(true)
     setResult("")
     try {
-      const { base64, mime } = await fileToBase64(file)
+      // Compress + resize client-side. A 5-10MB camera photo becomes
+      // ~200-500KB here, well under the serverless 4.5MB body limit.
+      const compressed = await compressImage(file, {
+        maxDimension: 1600,
+        quality: 0.85,
+      })
       const res = await apiFetch<{ result: string }>(
         "/api/ai/scan-prescription",
         {
           method: "POST",
-          body: JSON.stringify({ imageBase64: base64, mimeType: mime }),
+          body: JSON.stringify({
+            imageBase64: compressed.base64,
+            mimeType: compressed.mime,
+          }),
         }
       )
       setResult(res.result)
-      toast.success("Prescription scanned successfully.")
+      // Surface the compression win so users understand why camera photos now work.
+      if (compressed.wasCompressed && compressed.originalSize > 1024 * 1024) {
+        toast.success(
+          `Prescription scanned. Image optimized ${formatBytes(
+            compressed.originalSize
+          )} → ${formatBytes(compressed.compressedSize)}.`
+        )
+      } else {
+        toast.success("Prescription scanned successfully.")
+      }
     } catch (e) {
       toast.error(
         e instanceof Error ? e.message : "Failed to scan prescription."
@@ -2317,8 +2334,8 @@ function PrescriptionScanner() {
             : "Drag & drop a prescription image, or click to browse"}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Supports JPG, PNG. The image is processed securely by our AI vision
-          model.
+          Supports JPG, PNG & camera photos. Large images are auto-optimized
+          on your device before secure AI processing.
         </p>
         <input
           ref={inputRef}
@@ -2328,6 +2345,8 @@ function PrescriptionScanner() {
           onChange={(e) => {
             const f = e.target.files?.[0]
             if (f) handleFile(f)
+            // Reset so selecting the same file again re-triggers onChange.
+            e.target.value = ""
           }}
         />
         <Button
